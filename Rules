@@ -4,109 +4,126 @@
 # use cases when creating a simple site with nanoc.  It's meant to have 
 # better defaults so new users don't have to configure it much if at all. 
 # For the most part, it copies all files from the content folder to the 
-# output folder with the same name. It has the following features:
+# output folder with the same name. It has the following features along with
+# the accompanying nanoc.yaml configuration file:
 #
-# * Certain predefined page extensions such as html, haml, md, markdown and
-#   textile are routed to "clean" URI's (see below regarding Item identifiers).  
-#   The list of these extensions should be specified in nanoc.yaml:
+# * Configurable switching to generate "clean URI's" in a compatible manner
+#   with nanoc v3 or use URI's with extensions.
 #
-#   page_extensions: [ 'haml', 'htm', 'html', 'markdown', 'md', 'textile', 'xhtml' ]
+# * Text files are classified into two types--page files and non-page files. 
+#   Page file extensions are a subset of text_extensions and defined as
+#   page_extensions in nanoc.yaml. All other text files with an extension
+#   not found in page_extensions list and all binary files are routed with 
+#   the same path and extension on output as on input. 
 #
-#   All the files matching one of these page extensions are filtered through erb 
-#   (except haml) then filtered through one of Haml, Markdown and Textile if 
-#   appropriate. Finally, the default layout is applied.
+# * Extension mapping for non-page files defined in nanoc.yaml as 
+#   extensions_map which maps one extension to another such as for .sass,
+#   .scss and .less to .css along with .coffee to .js, etc.
 #
-# * All other text files with an extension not found in the page extensions list
-#   and all binary files are routed with the same path and extension on
-#   output as on input.  
-#
-# * Compass/SASS are much more easily supported just by uncommenting lines 
-#   below and adding a config.rb.  This Rules file does not need to know 
-#   where the .scss or .sass files are located which eliminates the need for 
-#   special rules for scss and sass files and keeping paths in sync between 
-#   this file and config.rb.  The compass config.rb must still be configured 
-#   with the correct paths.
-#
-# A few helpful tips about the Rules file:
-#
-# * The string given to #compile and #route are matching patterns for
-#   identifiers--not for paths. Therefore, you can’t match on extension.
-#
-# * The order of rules is important: for each item, only the first matching
-#   rule is applied.
-#
-# * Item identifiers start and end with a slash (e.g. “/about/” for the file
-#   “content/about.html”). To select all children, grandchildren, … of an
-#   item, use the pattern “/about/*/”; “/about/*” will also select the parent,
-#   because “*” matches zero or more characters.
+# * Pre-configured compass/Sass support that can be enabled easily. The
+#   Rules file does not need to have paths kept in sync with config.rb.
 
 # Use the compass sass framework for processing scss and sass files.
 # To use, uncomment these two lines and ensure you have a config.rb for compass.
 #require 'compass'
 #Compass.add_project_configuration('config.rb')
 
+# Start: Read configuration from nanoc.yaml
 # From nanoc.yaml, page_extensions
-page_extensions = @config[:page_extensions] || %w[ haml html markdown md textile ]
+page_extensions = @config[:page_extensions] || %w[ haml html markdown md slim ]
+# From nanoc.yaml, extensions_map
+extensions_map = @config[:extensions_map]
+# From nanoc.yaml, clean_uri_routing
+clean_uri_routing = @config[:clean_uri_routing]
+# End: Read configuration from nanoc.yaml
 
 # Preprocess items before they are compiled and frozen
 preprocess do
 end
 
 # don't filter SASS partials
-compile %r{/_.+/$} do
+compile '/**/_*.{sass,scss}' do
   nil
 end
 
-compile '*' do
+compile '/**/*' do
   if item.binary?
-    # don't filter binary items
+    # for binary files, don't filter
   else
+    # for text files ...
     if page_extensions.include?(item[:extension])
-      # for page files, filter and apply a layout
-      filter :erb unless item[:extension].eql?('haml')
-      # filter by extension
-      case item[:extension]
-      when 'md','markdown' then
-        filter :kramdown, :auto_ids => false
-      when 'textile' then
-        filter :redcloth
-      when 'haml' then
-        filter :haml
-      end
-      layout 'default'
-    else
-      # Filter if a scss or sass file
-      filter :sass, Compass.sass_engine_options
-        .merge(:syntax => item[:extension].to_sym) if
-          %w[scss sass].include?item[:extension]
+      # for page files, filter with erb unless haml or slim
+      filter :erb unless %w[haml slim].include?(item[:extension])
+    end
+    # filter by extension
+    case item[:extension]
+    when 'md','markdown' then
+      filter :kramdown, :auto_ids => false
+    when 'textile' then
+      filter :redcloth
+    when 'haml' then
+      filter :haml
+    when 'slim' then
+      filter :slim
+    when 'scss','sass' then
+      filter :sass, Compass.sass_engine_options.merge(:syntax => item[:extension].to_sym)
+    when 'coffee' then
+      filter :coffeescript
+    end
+    if page_extensions.include?(item[:extension])
+      # for page files, apply a layout
+      layout '/default.*'
     end
   end
 end
 
 # don't route SASS partials
-route %r{/_.+/$} do
+route '/**/_*.{sass,scss}' do
   nil
 end
 
-route '*' do
-  if item.binary?
-    # Write item with identifier /foo/ to /foo.ext
-    item.identifier.chop + '.' + item[:extension]
-  else
+# Route blog files
+# By default:
+# * Source files are all located in content/blog and must be named using the
+#   format: yyyy-mm-dd-blog-file-title.md, .html, etc.
+# * Output files that are pages are routed to a clean URI formatted as: 
+#     /blog/yyyy/mm/blog-file-title/index.html
+#   Non-pages including binary files are routed preserving the extension:
+#     /blog/yyyy/mm/blog-file-title.*
+# Source files that are not pages will be routed preserving their extension.
+route %r{\A/blog/(\d\d\d\d)\-(\d\d)\-(\d\d)\-([^\/]+)\..*} do |y, m, d, slug|
+  "/blog/#{y}/#{m}/#{slug}" +
     if page_extensions.include?(item[:extension])
-      # Write item with identifier /foo/ to /foo/index.html
-      item.identifier + 'index.html'
+      # If a page file, route to a folder containing index.html
+      '/index.html'
     else
-      # Map extensions if necessary
-      extension = case item[:extension]
-        # Map scss/sass extensions to css
-        when 'scss','sass'; 'css'
-        else item[:extension]
-      end
-      # Write item keeping extension
-      item.identifier.chop + '.' + extension
+      # otherwise, retain the existing file extension
+      '.' + item[:extension]
     end
+end
+
+# Route all page files
+route "/**/*.{#{page_extensions.join(',')}}" do
+  # Translate item identifier from /foo.* to /foo.html
+  identifier = item.identifier.with_ext('html')
+  # Adjust for "clean" URI's or URI's with extensions
+  if clean_uri_routing and !identifier.end_with?('index.html')
+    # Route with identifier /foo.* to /foo/index.html unless item ends with /index.html
+    identifier = item.identifier.without_ext + '/index.html'
+  end
+  identifier
+end
+
+# Route non-page files and other text or binary files mapping the extension if necessary.
+route '/**/*' do
+  if item.binary?
+    item.identifier.to_s
+  else
+    # Use a mapped extension if available, otherwise the original one
+    extension = extensions_map[item[:extension].to_sym] || item[:extension]
+    # Route item with updated extension
+    item.identifier.with_ext(extension)
   end
 end
 
-layout '*', :erb
+layout '/**/*', :erb
